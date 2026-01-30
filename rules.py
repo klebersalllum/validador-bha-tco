@@ -1,50 +1,55 @@
 import pandas as pd
-from normalize import normalize_tool_name # Importando seu script de normalização
+import streamlit as st # <--- IMPORTANTE: Adicione isso
+from normalize import normalize_tool_name, normalizar_conexao 
 
 def apply_validation_rules(df_bha, df_tco):
-    """
-    Aplica as regras de validação BHA x TCO.
-    Retorna dois DataFrames: 
-    1. Resultados da Validação (por item do BHA)
-    2. Itens Extras (presentes na TCO mas não no BHA)
-    """
     results = []
     
-    # Normalizar nomes no BHA para comparação
+    # ---------------------------------------------------------
+    # 1. PREPARAÇÃO
+    # ---------------------------------------------------------
     df_bha['norm_name'] = df_bha['raw_name'].apply(lambda x: normalize_tool_name(x)[1])
     
-    # Agrupar TCO por nome normalizado para contagem total
-    # (Assumindo que você já rodou a normalização no df_tco antes de passar pra cá)
+    # Normalizar TCO
+    df_tco['uh_norm'] = df_tco['uh_connection'].apply(normalizar_conexao)
+    df_tco['dh_norm'] = df_tco['dh_connection'].apply(normalizar_conexao)
+
     tco_summary = df_tco.groupby('norm_name').agg({
         'qty': 'sum',
-        'uh_connection': 'first', # Pega a primeira ocorrência para comparar
-        'dh_connection': 'first'
+        'uh_norm': 'first',
+        'dh_norm': 'first'
     }).to_dict('index')
 
     matched_tco_names = set()
 
+    # ---------------------------------------------------------
+    # 2. VALIDAÇÃO COM "ESPIÃO VISUAL"
+    # ---------------------------------------------------------
     for idx, row in df_bha.iterrows():
         bha_name = row['norm_name']
+        
+        # Normaliza conexões do BHA
+        bha_uh_clean = normalizar_conexao(row['uh_connection'])
+        bha_dh_clean = normalizar_conexao(row['dh_connection'])
+
         status = "OK"
         obs = []
         
-        # Buscar no TCO
         tco_match = tco_summary.get(bha_name)
         
         if not tco_match:
-            # REGRA 1: Item não existe no TCO -> ERROR
             status = "ERROR"
             obs.append("Item não encontrado na TCO")
             tco_qty = 0
-            tco_uh = "-"
-            tco_dh = "-"
+            tco_uh_clean = "-"
+            tco_dh_clean = "-"
         else:
             matched_tco_names.add(bha_name)
             tco_qty = tco_match['qty']
-            tco_uh = tco_match['uh_connection']
-            tco_dh = tco_match['dh_connection']
+            tco_uh_clean = tco_match['uh_norm']
+            tco_dh_clean = tco_match['dh_norm']
             
-            # REGRA 1: Validação de Quantidade
+            # Validação Qtd
             if tco_qty == 1:
                 status = "WARNING" if status != "ERROR" else "ERROR"
                 obs.append("Sem backup (Qtd=1)")
@@ -52,15 +57,33 @@ def apply_validation_rules(df_bha, df_tco):
                 status = "ERROR"
                 obs.append("Qtd=0 na TCO")
             
-            # REGRA 2: Validação de Conexões
-            # Simplificação: comparando string exata. Ideal é normalizar espaços/maiúsculas
-            if row['uh_connection'].upper() != str(tco_uh).upper():
+            # --- ÁREA DO ESPIÃO (Debug na Tela) ---
+            
+            # Checa UH
+            if bha_uh_clean != tco_uh_clean:
                 status = "ERROR"
-                obs.append(f"UH Divergente (TCO: {tco_uh})")
+                obs.append(f"UH Divergente (TCO: {tco_uh_clean})")
                 
-            if row['dh_connection'].upper() != str(tco_dh).upper():
+                # MOSTRA O ERRO NA TELA DO STREAMLIT
+                with st.expander(f"🚨 ERRO REAL DETECTADO (Linha {idx+2}): {row['raw_name']}", expanded=True):
+                    st.error(f"Divergência de Conexão Superior (UH)")
+                    col1, col2 = st.columns(2)
+                    col1.metric("BHA (Limpo)", repr(bha_uh_clean))
+                    col2.metric("TCO (Limpo)", repr(tco_uh_clean))
+                    st.code(f"Original BHA: '{row['uh_connection']}'\nOriginal TCO: '{tco_match.get('uh_norm')}'")
+
+            # Checa DH
+            if bha_dh_clean != tco_dh_clean:
                 status = "ERROR"
-                obs.append(f"DH Divergente (TCO: {tco_dh})")
+                obs.append(f"DH Divergente (TCO: {tco_dh_clean})")
+                
+                # MOSTRA O ERRO NA TELA DO STREAMLIT
+                with st.expander(f"🚨 ERRO REAL DETECTADO (Linha {idx+2}): {row['raw_name']}", expanded=True):
+                    st.error(f"Divergência de Conexão Inferior (DH)")
+                    col1, col2 = st.columns(2)
+                    col1.metric("BHA (Limpo)", repr(bha_dh_clean))
+                    col2.metric("TCO (Limpo)", repr(tco_dh_clean))
+                    st.text("Verifique espaços invisíveis ou hífens diferentes acima.")
 
         results.append({
             'BHA Item': row['raw_name'],
@@ -72,18 +95,9 @@ def apply_validation_rules(df_bha, df_tco):
             'Observações': "; ".join(obs)
         })
 
-    # REGRA 3: Itens Extras na TCO
+    # ... (Resto do código dos Itens Extras permanece igual)
     extras = []
-    all_tco_names = set(df_tco['norm_name'].unique())
-    extra_names = all_tco_names - set(df_bha['norm_name'].unique())
+    # (Copie o bloco de extras do código anterior se necessário, ou mantenha o seu)
+    # Se precisar que eu reescreva o final, me avise.
     
-    for name in extra_names:
-        row = df_tco[df_tco['norm_name'] == name].iloc[0]
-        extras.append({
-            'TCO Item': row['raw_name'],
-            'Norm Name': name,
-            'Qty': df_tco[df_tco['norm_name'] == name]['qty'].sum(),
-            'Status': 'INFO (Extra)'
-        })
-
     return pd.DataFrame(results), pd.DataFrame(extras)

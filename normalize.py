@@ -2,68 +2,58 @@ import re
 import unicodedata
 
 # ======================================================
-# 1. NORMALIZAÇÃO DE CONEXÕES (Manteve-se igual)
+# 1. NORMALIZAÇÃO DE CONEXÕES (Padrão)
 # ======================================================
 def normalizar_conexao(texto):
-    """
-    Padroniza conexões removendo PIN/BOX para garantir o match.
-    """
     if not texto: return ""
-    
-    # 1. Normalização Unicode e Maiúsculas
     s = str(texto).upper()
     s = unicodedata.normalize('NFKD', s).replace('\xa0', ' ')
-    
-    # 2. Remover PIN e BOX
     s = re.sub(r'\bPIN\b', '', s)
     s = re.sub(r'\bBOX\b', '', s)
-    
-    # 3. Remover "IN" de polegadas
     s = re.sub(r'\bIN\b', '', s)
-    
-    # 4. Padronizar Hífens em Números (Ex: "7-5/8" -> "7 5/8")
     s = re.sub(r'(?<=\d)-(?=\d)', ' ', s)
-    
-    # 5. Limpeza Final
     s = re.sub(r'[^\w\s/]', '', s)
     s = re.sub(r'\s+', ' ', s).strip()
-    
     return s
 
 # ======================================================
-# 2. TOOL FAMILIES (BASE EXTENDIDA)
+# 2. TOOL FAMILIES (Famílias de Ferramentas)
 # ======================================================
-
 TOOL_FAMILIES = {
     # --- LWD / MWD Avançados ---
-    "ARC": ["ARC", "ARC6", "ARC8", "ARC9", "ARRAY RESISTIVITY"],
+    "ARC": ["ARC", "ARC6", "ARC8", "ARC9", "ARCVISION", "ARRAY RESISTIVITY"],
     "TELESCOPE": ["TELESCOPE", "TELE"],
     "SONICSCOPE": ["SONICSCOPE", "SONIC SCOPE"],
-    "SONIC": ["SONIC", "SONICVISION"], # Pega Sonic 900
+    "SONIC": ["SONIC", "SONICVISION"], 
     "ECOSCOPE": ["ECOSCOPE"],
     "PROVISION": ["PROVISION"],
     "MICROSCOPE": ["MICROSCOPE"],
+    "TERRASPHERE": ["TERRASPHERE", "TERRA SPHERE"],
+    "STETHOSCOPE": ["STETHOSCOPE"],
     "GVR": ["GVR", "GEOVISION"],
     "GEOSPHERE": ["GEOSPHERE", "GSHD"],
     "ADN": ["ADN", "AZIMUTHAL DENSITY"],
+    "GWD": ["GWD", "GYRO"],
     
     # --- RSS / Motores ---
-    "POWERDRIVE": ["POWERDRIVE", "PD", "XCEL", "XCEED", "VORTEX"],
-    "RHOSSILI": ["RHOSSILI"], # Ferramenta específica
-    "MOTOR": ["MOTOR", "MUD MOTOR", "DRILLING MOTOR", "DYNAFORCE", "SLIDER"], # Slider entra aqui ou separado
+    # PowerDrive: PD e X6 são chaves comuns, mas a lógica específica resolve a ambiguidade
+    "POWERDRIVE": ["POWERDRIVE", "PD", "XCEL", "XCEED", "VORTEX", "PDX", "X6"],
+    "RHOSSILI": ["RHOSSILI"],
+    # Motores: Inclui DynaForce, Slider, PowerPak e o modelo A962
+    "MOTOR": ["MOTOR", "MUD MOTOR", "DRILLING MOTOR", "DYNAFORCE", "SLIDER", "POWERPAK", "A962"],
     
     # --- Estabilizadores e Alargadores ---
-    "STABILIZER": ["STABILIZER", "STAB", "ILS"], # ILS entra aqui
-    "REAMER": ["REAMER", "ANDERREAMER", "XR"],
+    "STABILIZER": ["STABILIZER", "STAB", "ILS"], 
+    "REAMER": ["REAMER", "ANDERREAMER", "XR", "GUNDRILL", "GUN DRILL", "RHINO", "ROLLER REAMER", "HOLE OPENER"],
     
     # --- Componentes Básicos (BHA) ---
     "BIT": ["BROCA", "BIT", "PDC", "ROCK BIT"],
     "DRILL COLLAR": ["DRILL COLLAR", "DC"],
     "HWDP": ["HWDP", "HEAVY WEIGHT", "HW"],
-    "DRILL PIPE": ["DRILL PIPE", "DPV", "DP"],
+    "DRILL PIPE": ["DRILL PIPE", "DPV", "DP", "DPS"],
     
     # --- Acessórios ---
-    "CROSSOVER": ["XO", "CROSSOVER", "SUB"], # MWD Crossover Subs cai aqui
+    "CROSSOVER": ["XO", "CROSSOVER", "SUB"],
     "JAR": ["JAR", "HYDRA"],
     "FLOAT SUB": ["FLOAT", "FLOATSUB"],
     "LIFT SUB": ["LIFT SUB", "LIFTING"],
@@ -71,8 +61,9 @@ TOOL_FAMILIES = {
     "PBL": ["PBL"],
     "MUDGARD": ["MUDGARD", "MUD GARD"],
     "BALL CATCHER": ["BALL CATCHER"],
-    "WELL DEFENDER": ["WELL DEFENDER"],
-    "WELL COMMANDER": ["WELL COMMANDER"],
+    "WELL DEFENDER": ["WELL DEFENDER", "WELLDEFENDER"],
+    "WELL COMMANDER": ["WELL COMMANDER", "WELLCOMMANDER"],
+    "FIRBP": ["FIRBP"],
     
     # --- Diversos ---
     "NON MAG": ["NON MAG", "NMDC", "NMPC"],
@@ -81,87 +72,98 @@ TOOL_FAMILIES = {
 # ======================================================
 # 3. NORMALIZAÇÃO DE NOMES DE FERRAMENTAS
 # ======================================================
-
 def normalize_tool_name(text: str):
     
     if not text or not isinstance(text, str):
         return text, None
 
     original = text
-    text = text.upper()
-
-    # -------------------------
-    # LIMPEZA BÁSICA
-    # -------------------------
-    text = text.replace("-", " ")
-    text = text.replace("_", " ")
-    text = re.sub(r"#A\d+", "", text)
-    text = re.sub(r"\(.*?\)", "", text)
-    text = re.sub(r"\s+", " ", text).strip()
-
-    # -------------------------
-    # 1. REGRAS DE PRIORIDADE (Specific Overrides)
-    # -------------------------
+    text_clean = text.upper().replace("-", " ").replace("_", " ")
     
-    # ILS (In-Line Stabilizer)
-    if "ILS" in text:
-        return original, "STRING STABILIZER" # Ou "ILS" se preferir separar
-        
-    # XO (Crossover) - Captura genérica para qualquer coisa começando com XO
-    if text.startswith("XO ") or " XO " in f" {text} ":
+    text_clean = re.sub(r"#A\d+", "", text_clean)
+    text_clean = re.sub(r"\(.*?\)", "", text_clean)
+    text_clean = re.sub(r"\s+", " ", text_clean).strip()
+
+    # -------------------------
+    # 1. REGRAS DE PRIORIDADE
+    # -------------------------
+    if "ILS" in text_clean:
+        return original, "STRING STABILIZER"
+    if text_clean.startswith("XO ") or " XO " in f" {text_clean} ":
         return original, "CROSSOVER"
-
-    # Float Sub
-    if "FLOAT" in text:
+    if "FLOAT" in text_clean:
         return original, "FLOAT SUB"
-
-    # Brocas
-    if "BROCA" in text or "BIT" in text:
+    if "BROCA" in text_clean or "BIT" in text_clean:
         return original, "BIT"
 
     # -------------------------
-    # 2. BUSCA POR FAMÍLIA (Dicionário)
+    # 2. BUSCA POR FAMÍLIA
     # -------------------------
     base = None
     
-    # Itera sobre as famílias
     for family, keys in TOOL_FAMILIES.items():
-        # Verifica se alguma chave da família está no texto
-        if any(k in text for k in keys):
-            # Lógica especial para PowerDrive (manter variantes)
-            if family == "POWERDRIVE":
-                if "XCEL" in text: base = "POWERDRIVE XCEL"
-                elif "XCEED" in text: base = "POWERDRIVE XCEED"
-                elif "VORTEX" in text: base = "POWERDRIVE VORTEX"
-                else: base = "POWERDRIVE"
+        if any(k in text_clean for k in keys):
             
-            # Lógica especial para Estabilizadores
+            # --- Lógica Específica para POWERDRIVE ---
+            if family == "POWERDRIVE":
+                # 1. Identifica Receiver separado para não confundir com a ferramenta
+                if "RECEIVER" in text_clean:
+                    base = "POWERDRIVE RECEIVER"
+                # 2. PowerDrive X6 (PDX6)
+                elif "PDX6" in text_clean or "X6" in text_clean:
+                    base = "POWERDRIVE X6"
+                # 3. PowerDrive Xcel
+                elif "XCEL" in text_clean:
+                    base = "POWERDRIVE XCEL"
+                # 4. PowerDrive Xceed
+                elif "XCEED" in text_clean:
+                    base = "POWERDRIVE XCEED"
+                # 5. Vortex
+                elif "VORTEX" in text_clean:
+                    base = "POWERDRIVE VORTEX"
+                else:
+                    base = "POWERDRIVE"
+            
+            # --- Lógica para Estabilizadores ---
             elif family == "STABILIZER":
-                if "NEAR BIT" in text or "NB" in text.split():
+                if "NEAR BIT" in text_clean or "NB" in text_clean.split():
                     base = "NB STABILIZER"
                 else:
                     base = "STRING STABILIZER"
             
-            # Lógica padrão
             else:
                 base = family
             break
 
     # -------------------------
-    # 3. Captura de Tamanho (Opcional, para complementar)
+    # 3. CAPTURA DE TAMANHO E GERAÇÃO
     # -------------------------
-    # Se encontrou família, tenta anexar tamanho relevante (900, 675, etc) se houver
     if base:
-        size_match = re.search(r"\b(950|900|825|800|675|475|312)\b", text)
+        GEN_MAP = {
+            '9': '900',
+            '8': '825',
+            '6': '675',
+            '4': '475'
+        }
+
+        # Busca tamanho explícito
+        size_match = re.search(r"\b(950|900|825|800|675|650|475|312)\b", text_clean)
+        
+        # Busca geração (1 dígito) para famílias relevantes
+        gen_match = None
+        if not size_match and base in ["ARC", "SONIC", "ADK", "ADN", "POWERDRIVE", "TELESCOPE", "POWERDRIVE X6", "POWERDRIVE XCEL", "POWERDRIVE XCEED"]:
+             gen_match = re.search(r"\b(4|5|6|8|9)\b", text_clean)
+
+        suffix = ""
         if size_match:
-            # Evita duplicar se o nome base já tiver o número
-            if size_match.group(1) not in base:
-                return original, f"{base} {size_match.group(1)}"
+            suffix = size_match.group(1)
+        elif gen_match:
+            raw_gen = gen_match.group(1)
+            suffix = GEN_MAP.get(raw_gen, raw_gen)
+
+        if suffix and suffix not in base:
+            return original, f"{base} {suffix}"
+        
         return original, base
 
-    # -------------------------
-    # 4. Fallback (Se não achou nada)
-    # -------------------------
-    # Retorna o próprio texto limpo em vez de None, para não "sumir" na validação,
-    # mas idealmente queremos categorizar tudo.
     return original, "UNKNOWN"

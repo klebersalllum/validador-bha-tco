@@ -3,80 +3,125 @@ import numpy as np
 
 def extract_bha_data(file_path):
     """
-    Lê o arquivo BHA (Excel/CSV) e retorna um DataFrame limpo com:
-    [Quantity, Tool Name, UH Type, UH Gender, DH Type, DH Gender]
+    Lê o arquivo BHA (Excel/CSV) de forma robusta, suportando layouts diferentes.
+    - Procura por 'Desc.' ou 'Joint Count' para se localizar.
+    - Filtra itens que não são SLB (coluna Manu.).
     """
-    # Tenta ler ignorando cabeçalho inicialmente para achar a linha correta
-    try:
-        df = pd.read_csv(file_path, header=None)
-    except:
-        df = pd.read_excel(file_path, header=None)
-
-    # Localizar a linha de cabeçalho "Joint Count"
-    header_row = -1
-    joint_col = -1
     
+    # 1. Leitura Inteligente (Tenta CSV, depois Excel)
+    df = None
+    try:
+        # Tenta ler como CSV primeiro (com separador inteligente)
+        try:
+            df = pd.read_csv(file_path, header=None, sep=None, engine='python')
+        except:
+            # Fallback para separador comum se o engine python falhar
+            df = pd.read_csv(file_path, header=None)
+    except:
+        try:
+            df = pd.read_excel(file_path, header=None)
+        except Exception as e:
+            raise ValueError(f"Não foi possível ler o arquivo. Verifique o formato. Erro: {e}")
+
+    # 2. Localizar a linha de cabeçalho e a coluna âncora ("Desc." ou "Description")
+    header_row = -1
+    desc_col = -1
+    
+    # Lista de possíveis nomes para a coluna de descrição (Âncora)
+    possible_anchors = ['Desc.', 'Desc', 'Description', 'DESCRIPTION', 'DESC.']
+    
+    # Varre as primeiras 30 linhas
     for r in range(min(30, len(df))):
-        for c in range(len(df.columns)):
-            val = str(df.iloc[r, c]).strip()
-            if val == 'Joint Count':
+        row_values = [str(val).strip() for val in df.iloc[r, :].values]
+        
+        # Tenta achar uma das âncoras
+        for col_idx, cell_val in enumerate(row_values):
+            if cell_val in possible_anchors:
                 header_row = r
-                joint_col = c
+                desc_col = col_idx
                 break
+            # Fallback: Se achar "Joint Count", assume que Desc é a próxima (Joint Count + 1)
+            elif cell_val == 'Joint Count':
+                header_row = r
+                desc_col = col_idx + 1
+                break
+        
         if header_row != -1:
             break
             
-    if header_row == -1:
-        raise ValueError("Cabeçalho 'Joint Count' não encontrado no arquivo BHA.")
+    if header_row == -1 or desc_col == -1:
+        raise ValueError("Não foi possível localizar o cabeçalho 'Desc.' ou 'Joint Count' no arquivo BHA.")
 
-    # Mapear colunas baseadas na linha de cabeçalho encontrada
-    # Assumindo estrutura fixa a partir da coluna Joint Count
-    # Joint Count (0), Desc (1), ... Bot Type (6), Bot Gender (7) - offsets relativos
-    
+    # 3. Definição dos Offsets Relativos à coluna "Desc."
+    # Baseado na estrutura: [JointCount] [Desc] [Manu] ... [Bot Type] [Bot Gender]
+    # Desc é o indice 0 relativo.
+    OFF_MANU = 1      # Coluna Manu é logo a direita de Desc
+    OFF_BOT_TYPE = 5  # DH Connection Type
+    OFF_BOT_GEN = 6   # DH Connection Gender
+    # Top Type (UH) geralmente está nas mesmas colunas, mas na linha de baixo
+
     # Função auxiliar para pegar valor com segurança
-    def get_val(row_idx, col_offset):
-        if joint_col + col_offset < len(df.columns):
-            return df.iloc[row_idx, joint_col + col_offset]
+    def get_val(row_idx, col_idx):
+        if col_idx < len(df.columns):
+            return df.iloc[row_idx, col_idx]
         return np.nan
 
-    # Dados começam 2 linhas após o cabeçalho
     items = []
+    # Dados começam 2 linhas após o cabeçalho (Linha Header + Linha Unidades/Sub-header + DADOS)
     i = header_row + 2
     
     while i < len(df):
         # O nome da ferramenta (Desc) é o guia principal
-        raw_name = get_val(i, 1) # Desc é offset +1
-        if pd.isna(raw_name):
-            break
+        raw_name = get_val(i, desc_col)
+        
+        # Se não tem nome, acabou a lista ou é linha vazia
+        if pd.isna(raw_name) or str(raw_name).strip() == '':
+            # Tenta verificar se não é apenas uma quebra de página (checa próxima linha)
+            if i + 2 < len(df) and not pd.isna(get_val(i + 2, desc_col)):
+                i += 1
+                continue
+            else:
+                break
             
         name = str(raw_name).strip()
         
-        # Leitura das conexões (DH na linha 1, UH na linha 2)
-        dh_type = str(get_val(i, 6)).strip()   # Bot Type
-        dh_gender = str(get_val(i, 7)).strip() # Bot Gender
+        # ====================================================================
+        # FILTRO POR FABRICANTE (MANU.)
+        # ====================================================================
+        manu_val = str(get_val(i, desc_col + OFF_MANU)).strip().upper()
         
-        # Verificar se existe linha seguinte para UH (Top Type)
+        # Se não for SLB, ignora e pula o bloco do item (2 linhas)
+        if "SLB" not in manu_val:
+            i += 2
+            continue
+        # ====================================================================
+
+        # Leitura das conexões
+        # DH (Down Hole) -> Linha atual (Bot Type/Gender)
+        dh_type = str(get_val(i, desc_col + OFF_BOT_TYPE)).strip()
+        dh_gender = str(get_val(i, desc_col + OFF_BOT_GEN)).strip()
+        
+        # UH (Up Hole) -> Próxima linha (Top Type/Gender)
         if i + 1 < len(df):
-            uh_type = str(get_val(i+1, 6)).strip()
-            uh_gender = str(get_val(i+1, 7)).strip()
+            uh_type = str(get_val(i+1, desc_col + OFF_BOT_TYPE)).strip()
+            uh_gender = str(get_val(i+1, desc_col + OFF_BOT_GEN)).strip()
         else:
             uh_type = ""
             uh_gender = ""
 
-        # Limpeza de "nan"
-        if dh_type.lower() == 'nan': dh_type = ""
-        if dh_gender.lower() == 'nan': dh_gender = ""
-        if uh_type.lower() == 'nan': uh_type = ""
-        if uh_gender.lower() == 'nan': uh_gender = ""
+        # Limpeza de "nan" e formatação
+        def clean(val):
+            if val.lower() == 'nan': return ""
+            return val
 
         items.append({
-            'source_file': file_path.name if hasattr(file_path, 'name') else 'BHA',
-            'qty': 1, # BHA lista item a item, então qtd é sempre 1 por linha
+            'source_file': getattr(file_path, 'name', 'BHA'),
+            'qty': 1,
             'raw_name': name,
-            'uh_connection': f"{uh_type} {uh_gender}".strip(),
-            'dh_connection': f"{dh_type} {dh_gender}".strip()
+            'uh_connection': f"{clean(uh_type)} {clean(uh_gender)}".strip(),
+            'dh_connection': f"{clean(dh_type)} {clean(dh_gender)}".strip()
         })
         
-        i += 2 # Pula de 2 em 2 linhas (item ocupa 2 linhas)
+        i += 2 
 
     return pd.DataFrame(items)

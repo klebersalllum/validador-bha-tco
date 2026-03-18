@@ -1,0 +1,6 @@
+__pycache__/
+*.pdf
+*.xlsx
+*.csv
+temp_tco.pdf
+.venv/

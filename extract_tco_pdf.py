@@ -3,7 +3,7 @@ import pandas as pd
 import re
 
 # ==============================================================================
-# 6. Extração Padronizada - TCO (PDF) - STATUS UPDATE
+# 6. Extração Padronizada - TCO (PDF) - STATUS UPDATE & FILTRO
 # ==============================================================================
 
 def normalize_tool_name(tool_raw):
@@ -133,23 +133,23 @@ def parse_tco_pdf(pdf_path):
         tool_raw = head_match.group(2).strip()
         tool_norm = normalize_tool_name(tool_raw)
         
-        # --- LÓGICA DE STATUS CORRIGIDA ---
+        # --- LÓGICA DE STATUS ---
         status = "Unknown"
-        # Analisa os primeiros 400 caracteres para garantir que pegamos o cabeçalho
         header_sample = content[:400].upper()
         
-        # Ordem de prioridade (Status definitivos primeiro)
         if "ACCEPTED" in header_sample: status = "Accepted"
-        elif "RELEASED" in header_sample: status = "Released"   # <--- NOVO
+        elif "RELEASED" in header_sample: status = "Released"
         elif "REDIRECTED" in header_sample: status = "Redirected"
         elif "CANCELLED" in header_sample: status = "Cancelled"
-        elif "SUBMITTED" in header_sample:
-            # Verifica se não é apenas o rodapé "Submitted by"
-            # Geralmente "Submitted" como status aparece sozinho ou com data
-            # "Submitted by" geralmente tem um nome depois.
-            # Como estamos olhando o TOPO do bloco (header_sample), é seguro assumir status.
-            status = "Submitted"                                # <--- NOVO
+        elif "SUBMITTED" in header_sample: status = "Submitted"
 
+        # --- FILTRO DE STATUS (NOVO) ---
+        # Importa APENAS status ativos/aprovados. 
+        # Ignora Cancelled, Unknown ou qualquer outro não listado.
+        valid_statuses = ["Accepted", "Redirected", "Released", "Submitted"]
+        if status not in valid_statuses:
+            continue
+            
         # --- PARSING ---
         dh_full, uh_full, dh_m, dh_t = parse_block_smart(content)
 

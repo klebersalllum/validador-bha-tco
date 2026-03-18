@@ -1,117 +1,221 @@
 import pandas as pd
-from normalize import normalize_tool_name, normalizar_conexao 
+from normalize import normalize_tool_name, normalizar_conexao
 
-def apply_validation_rules(df_bha, df_tco):
+def check_crossover_in_tco(conn_a, conn_b, df_tco):
     """
-    Compara BHA vs TCO e gera:
-    1. df_results: Validação item a item do BHA.
-    2. df_extras: Itens que existem no TCO mas NÃO existem no BHA.
+    Procura no TCO se existe um Crossover que adapte Conn_A para Conn_B.
+    """
+    if not conn_a or not conn_b: return False, None
+    
+    keywords_a = conn_a.split()
+    keywords_b = conn_b.split()
+    
+    xos = df_tco[df_tco['norm_name'] == 'CROSSOVER']
+    
+    for _, row in xos.iterrows():
+        xo_desc = str(row['raw_name']).upper() + " " + str(row['dh_connection']).upper() + " " + str(row['uh_connection']).upper()
+        
+        types_a = [k for k in keywords_a if k in ["REG", "H90", "XT57", "FH", "IF", "VX", "GPDS", "PAC", "NC50"]]
+        types_b = [k for k in keywords_b if k in ["REG", "H90", "XT57", "FH", "IF", "VX", "GPDS", "PAC", "NC50"]]
+        
+        match_a = any(t in xo_desc for t in types_a) if types_a else True
+        match_b = any(t in xo_desc for t in types_b) if types_b else True
+        
+        if match_a and match_b:
+            return True, row['raw_name']
+            
+    return False, None
+
+def validate_contingency_bha(df_cont, df_prim, df_tco):
+    """
+    Valida Contingência com rigor total:
+    1. Estoque (Mínimo 2).
+    2. Compatibilidade Física com TCO (A conexão TEM que bater com o que está no inventário).
+    3. Engenharia (Mudança Primário -> Contingência exige XO).
     """
     results = []
     
-    # ---------------------------------------------------------
-    # 1. PREPARAÇÃO
-    # ---------------------------------------------------------
-
-    # Garante que temos os nomes normalizados
-    if 'norm_name' not in df_bha.columns:
-        df_bha['norm_name'] = df_bha['raw_name'].apply(lambda x: normalize_tool_name(x)[1])
-    
-    if 'norm_name' not in df_tco.columns:
-        df_tco['norm_name'] = df_tco['raw_name'].apply(lambda x: normalize_tool_name(x)[1])
-
-    # Cria listas de nomes presentes
-    bha_tools_set = set(df_bha['norm_name'].dropna().unique())
-
-    # Agrupar TCO para validação de quantidade (Item a Item do BHA)
-    tco_summary = df_tco.groupby('norm_name').agg({
+    # Mapas do Primário
+    prim_usage = df_prim.groupby('norm_name')['qty'].sum().to_dict()
+    prim_conn_map = {}
+    for _, row in df_prim.iterrows():
+        prim_conn_map[row['norm_name']] = {
+            'dh': normalizar_conexao(row.get('dh_connection', '')),
+            'uh': normalizar_conexao(row.get('uh_connection', ''))
+        }
+        
+    # Inventário TCO (Agora guardando as conexões do TCO também!)
+    tco_inventory = df_tco.groupby('norm_name').agg({
         'qty': 'sum',
-        'dh_connection': 'first', # Pega a primeira ocorrência para comparar conexões
+        'raw_name': 'first',
+        'dh_connection': 'first', # Importante: Saber qual a conexão real no TCO
         'uh_connection': 'first'
     }).to_dict('index')
 
-    # ---------------------------------------------------------
-    # 2. VALIDAÇÃO PRINCIPAL (O que está no BHA vs TCO)
-    # ---------------------------------------------------------
-    for idx, row in df_bha.iterrows():
-        bha_name = row['norm_name']
+    for _, row in df_cont.iterrows():
+        cont_name = row['norm_name']
+        cont_qty = row.get('qty', 1)
+        cont_dh = normalizar_conexao(row.get('dh_connection', ''))
+        cont_uh = normalizar_conexao(row.get('uh_connection', ''))
         
-        # Normaliza conexões do BHA para comparação limpa
-        bha_uh_clean = normalizar_conexao(row.get('uh_connection', ''))
-        bha_dh_clean = normalizar_conexao(row.get('dh_connection', ''))
+        status = "OK"
+        obs = []
+        
+        # Dados do TCO
+        tco_data = tco_inventory.get(cont_name)
+        
+        # --- 1. VALIDAÇÃO DE ESTOQUE ---
+        if not tco_data:
+            status = "ERROR"
+            obs.append("❌ Item não encontrado no TCO (Qtd=0)")
+            total_in_tco = 0
+            tco_dh_real = ""
+            tco_uh_real = ""
+        else:
+            total_in_tco = tco_data['qty']
+            tco_dh_real = normalizar_conexao(tco_data.get('dh_connection', ''))
+            tco_uh_real = normalizar_conexao(tco_data.get('uh_connection', ''))
+            
+            used_in_prim = prim_usage.get(cont_name, 0)
+            ideal_stock = used_in_prim + cont_qty
+            
+            if total_in_tco < ideal_stock:
+                status = "WARNING"
+                obs.append(f"⚠️ Quantidade Insuficiente/Reuso (TCO: {total_in_tco}, Necessário: {ideal_stock})")
+            elif total_in_tco < 2:
+                status = "WARNING"
+                obs.append(f"⚠️ Sem Backup (TCO: {total_in_tco} - Mínimo exigido: 2)")
+            else:
+                obs.append(f"✅ Backup OK (TCO: {total_in_tco})")
 
+        # --- 2. VALIDAÇÃO FÍSICA (CONTINGÊNCIA vs TCO) - A CORREÇÃO ---
+        # Independente do primário, a ferramenta da contingência tem que ser igual a do TCO
+        if tco_data:
+            # Checa DH
+            if cont_dh and tco_dh_real and cont_dh != tco_dh_real:
+                status = "ERROR" # Erro grave: A ferramenta planejada não bate com o físico
+                obs.append(f"❌ Conexão DH Incompatível com TCO (Plan: {cont_dh} vs TCO: {tco_dh_real})")
+            
+            # Checa UH
+            if cont_uh and tco_uh_real and cont_uh != tco_uh_real:
+                status = "ERROR"
+                obs.append(f"❌ Conexão UH Incompatível com TCO (Plan: {cont_uh} vs TCO: {tco_uh_real})")
+
+        # --- 3. VALIDAÇÃO DE ENGENHARIA (MUDANÇA EM RELAÇÃO AO PRIMÁRIO) ---
+        # Se passou na validação física, checamos se precisa de XO pela mudança de plano
+        if cont_name in prim_conn_map:
+            prim_data = prim_conn_map[cont_name]
+            conn_changed = False
+            
+            # Só faz sentido checar XO se o status ainda não for ERRO de incompatibilidade
+            if status != "ERROR":
+                # Checa DH
+                if cont_dh and cont_dh != prim_data['dh']:
+                    conn_changed = True
+                    has_xo, xo_name = check_crossover_in_tco(prim_data['dh'], cont_dh, df_tco)
+                    if has_xo:
+                        obs.append(f"✅ Mudança DH ({prim_data['dh']}->{cont_dh}): XO OK ({xo_name})")
+                    else:
+                        status = "WARNING"
+                        obs.append(f"⚠️ Mudança DH ({prim_data['dh']}->{cont_dh}) SEM XO")
+                
+                # Checa UH
+                if cont_uh and cont_uh != prim_data['uh']:
+                    conn_changed = True
+                    has_xo, xo_name = check_crossover_in_tco(prim_data['uh'], cont_uh, df_tco)
+                    if has_xo:
+                        obs.append(f"✅ Mudança UH ({prim_data['uh']}->{cont_uh}): XO OK ({xo_name})")
+                    else:
+                        status = "WARNING"
+                        obs.append(f"⚠️ Mudança UH ({prim_data['uh']}->{cont_uh}) SEM XO")
+            
+            if not conn_changed and status == "OK" and not any("❌" in o for o in obs):
+                pass
+                
+        results.append({
+            'Ferramenta (Cont)': row['raw_name'],
+            'Norm Name': cont_name,
+            'Conexão DH': cont_dh,
+            'Conexão UH': cont_uh,
+            'Status': status,
+            'Análise': "; ".join(obs)
+        })
+        
+    return pd.DataFrame(results)
+
+def apply_validation_rules(df_bha, df_tco):
+    """
+    Validação Padrão (BHA Primário vs TCO).
+    """
+    results = []
+    
+    if 'norm_name' not in df_bha.columns:
+        df_bha['norm_name'] = df_bha['raw_name'].apply(lambda x: normalize_tool_name(x)[1])
+    if 'norm_name' not in df_tco.columns:
+        df_tco['norm_name'] = df_tco['raw_name'].apply(lambda x: normalize_tool_name(x)[1])
+
+    bha_tools_set = set(df_bha['norm_name'].dropna().unique())
+    
+    tco_summary = df_tco.groupby('norm_name').agg({
+        'qty': 'sum',
+        'dh_connection': 'first',
+        'uh_connection': 'first'
+    }).to_dict('index')
+
+    for _, row in df_bha.iterrows():
+        bha_name = row['norm_name']
+        bha_qty = row.get('qty', 1)
+        bha_dh = normalizar_conexao(row.get('dh_connection', ''))
+        bha_uh = normalizar_conexao(row.get('uh_connection', ''))
+        
         status = "OK"
         obs = []
         
         tco_match = tco_summary.get(bha_name)
         
         if not tco_match:
-            # ERRO CRÍTICO: Planejado mas não encontrado no PDF
             status = "ERROR"
-            obs.append("Item não encontrado na TCO")
+            obs.append("❌ Item não encontrado na TCO")
             tco_qty = 0
-            tco_uh_clean = "-"
-            tco_dh_clean = "-"
+            tco_dh = "-"
+            tco_uh = "-"
         else:
             tco_qty = tco_match['qty']
-            # Normaliza conexões do TCO
-            tco_uh_clean = normalizar_conexao(tco_match.get('uh_connection', ''))
-            tco_dh_clean = normalizar_conexao(tco_match.get('dh_connection', ''))
+            tco_dh = normalizar_conexao(tco_match.get('dh_connection', ''))
+            tco_uh = normalizar_conexao(tco_match.get('uh_connection', ''))
             
-            # Validação Qtd (BHA pede X, TCO tem Y)
-            # Regra simples: Se TCO tiver 0, é erro. Se tiver 1, é warning (sem backup).
             if tco_qty == 0:
                 status = "ERROR"
-                obs.append("Qtd=0 na TCO")
-            elif tco_qty < row.get('qty', 1): # Se veio menos que o planejado
+                obs.append("❌ Qtd=0 na TCO")
+            elif tco_qty < bha_qty:
                 status = "ERROR"
-                obs.append(f"Qtd Insuficiente (Plan: {row.get('qty', 1)}, TCO: {tco_qty})")
-            elif tco_qty == 1 and row.get('qty', 1) == 1:
-                status = "WARNING" if status != "ERROR" else "ERROR"
-                obs.append("Sem backup (Qtd=1)")
+                obs.append(f"❌ Qtd Insuficiente (Plan: {bha_qty}, TCO: {tco_qty})")
+            elif tco_qty < 2:
+                status = "WARNING"
+                obs.append(f"⚠️ Sem Backup (TCO: {tco_qty} - Mínimo exigido: 2)")
+            else:
+                obs.append(f"✅ Backup OK (TCO: {tco_qty})")
             
-            # Validação Conexões
-            if bha_uh_clean != tco_uh_clean:
+            if bha_dh != tco_dh and bha_dh != "":
                 status = "ERROR"
-                obs.append(f"UH Divergente (TCO: {tco_match.get('uh_connection')})")
-            
-            if bha_dh_clean != tco_dh_clean:
+                obs.append(f"❌ Conexão DH Divergente (BHA: {bha_dh} vs TCO: {tco_dh})")
+
+            if bha_uh != tco_uh and bha_uh != "":
                 status = "ERROR"
-                obs.append(f"DH Divergente (TCO: {tco_match.get('dh_connection')})")
+                obs.append(f"❌ Conexão UH Divergente (BHA: {bha_uh} vs TCO: {tco_uh})")
 
         results.append({
-            'BHA Item': row['raw_name'],
-            'Norm Name': bha_name,
-            'BHA UH': row.get('uh_connection', ''),
-            'BHA DH': row.get('dh_connection', ''),
-            'TCO Qty': tco_qty,
+            'Ferramenta': row['raw_name'],
+            'Normalizado': bha_name,
+            'Conexão DH': bha_dh,
+            'Conexão UH': bha_uh,
+            'Conexão TCO DH': tco_dh,
+            'Conexão TCO UH': tco_uh,
             'Status': status,
             'Observações': "; ".join(obs)
         })
 
-    # ---------------------------------------------------------
-    # 3. IDENTIFICAR ITENS EXTRAS (Sobrando na TCO)
-    # ---------------------------------------------------------
-    # Lógica: Filtra linhas do TCO cujo 'norm_name' NÃO está na lista do BHA
-    
-    # Mascara booleana: True se o nome NÃO estiver no BHA
     mask_extras = ~df_tco['norm_name'].isin(bha_tools_set)
-    
-    # Filtra o DataFrame
-    df_extras_raw = df_tco[mask_extras].copy()
-    
-    # Seleciona e renomeia colunas para ficar bonito no relatório
-    cols_to_show = {
-        'raw_name': 'Nome no PDF (TCO)',
-        'norm_name': 'Nome Normalizado',
-        'qty': 'Qtd',
-        'dh_connection': 'Conexão DH',
-        'uh_connection': 'Conexão UH',
-        'status': 'Status PDF'
-    }
-    
-    # Garante que as colunas existem antes de selecionar
-    available_cols = [c for c in cols_to_show.keys() if c in df_extras_raw.columns]
-    df_extras = df_extras_raw[available_cols].rename(columns=cols_to_show)
+    df_extras = df_tco[mask_extras].copy()
 
     return pd.DataFrame(results), df_extras

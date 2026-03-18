@@ -1,193 +1,137 @@
 import streamlit as st
 import pandas as pd
-from extract_bha import extract_bha_data
-from extract_tco_pdf import build_tco_from_pdf # Atualizado para importar do script PDF correto
+from extract_bha import extract_bha_data, get_excel_sheet_names
+from extract_tco_pdf import build_tco_from_pdf
 from normalize import normalize_tool_name
-from rules import apply_validation_rules
+from rules import apply_validation_rules, validate_contingency_bha
 
-# Configuração da Página
-st.set_page_config(page_title="Validador BHA x TCO", layout="wide")
+st.set_page_config(page_title="Validador BHA x TCO Pro", layout="wide")
+st.title("🔧 Validador: Primário  vs Contingências")
 
-st.title("🔧 Validação Automática BHA vs TCO")
+# --- SIDEBAR DE UPLOAD ---
+with st.sidebar:
+    st.header("📂 Upload")
+    
+    st.info("Passo 1: Suba o Excel com todas as abas")
+    bha_master_file = st.file_uploader("Excel BHA Completo", type=['xlsx', 'xls', 'csv'])
+    
+    st.info("Passo 2: Suba o TCO em PDF")
+    tco_file = st.file_uploader("TCO Assinado", type=['pdf'])
 
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("1. Upload BHA (Excel/CSV)")
-    bha_file = st.file_uploader("Carregar arquivo BHA", type=['xlsx', 'csv'])
-
-with col2:
-    st.subheader("2. Upload TCO (PDF)")
-    tco_file = st.file_uploader("Carregar arquivo TCO", type=['pdf'])
-
-if bha_file and tco_file:
-    with st.spinner('Processando arquivos...'):
-        try:
-            # ==========================================
-            # 1. EXTRAÇÃO DE DADOS
-            # ==========================================
+# --- ÁREA PRINCIPAL ---
+if bha_master_file and tco_file:
+    
+    # 1. DETECÇÃO DE ABAS
+    sheet_names = []
+    is_excel = False
+    
+    if bha_master_file.name.endswith(('.xlsx', '.xls')):
+        sheet_names = get_excel_sheet_names(bha_master_file)
+        is_excel = True
+    
+    # 2. SELETORES INTELIGENTES
+    if is_excel and len(sheet_names) > 0:
+        st.markdown("### 🎯 Seleção de Abas")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Aqui você seleciona a "Amarelinha" (Ex: BHA#05_8.5in)
+            st.markdown("**1️⃣ Selecione o BHA PRIMÁRIO **")
+            prim_sheet = st.selectbox("Aba Principal:", sheet_names, index=0)
             
-            # 1.1 Processar BHA
-            df_bha = extract_bha_data(bha_file)
+        with col2:
+            # Aqui você seleciona as letras (Ex: BHA#05a, BHA#05b...)
+            # O BHA 4 você simplesmente NÃO seleciona aqui, e ele será ignorado.
+            st.markdown("**2️⃣ Selecione as CONTINGÊNCIAS**")
+            avail_sheets = [s for s in sheet_names if s != prim_sheet]
+            cont_sheets = st.multiselect("Abas de Backup:", avail_sheets)
             
-            # 1.2 Processar TCO (PDF)
-            # Salvar PDF temporariamente pq o pdfplumber lê do caminho
-            with open("temp_tco.pdf", "wb") as f:
-                f.write(tco_file.getbuffer())
-            
-            # Chama o extrator robusto que criamos
-            raw_tco_data = build_tco_from_pdf("temp_tco.pdf")
-            df_tco = pd.DataFrame(raw_tco_data)
-            # [NOVO] VERIFICAÇÃO VISUAL DOS CAMPOS 6.2
-            st.divider()
-            st.markdown("### 🕵️ Auditoria de Extração (Requisito 6.2)")
-            st.info("Verificação detalhada dos campos obrigatórios extraídos do PDF.")
-            
-            # Seleciona as colunas exatas pedidas no requisito 6.2
-            audit_cols = [
-                "tool_raw", 
-                "tool_norm",          # Novo
-                "quantity",
-                "status",
-                "DH Connection",      # (Modelo + Tipo unidos, ou Modelo cru dependendo da lógica visual)
-                "DH Connection Type", # Novo
-                "UH Connection",
-                "UH Connection Type", # Novo
-                "Size"
-            ]
-            
-            # Filtra colunas que existem no DF
-            existing_cols = [c for c in audit_cols if c in df_tco.columns]
-            
-            if len(df_tco) > 0:
-                with st.expander("Ver Tabela de Conferência Completa", expanded=True):
-                    st.dataframe(df_tco[existing_cols])
-            else:
-                st.error("Nenhuma ferramenta extraída.")
-            
+    else:
+        # Fallback para CSV
+        prim_sheet = None
+        cont_sheets = []
+        st.info("Arquivo único (CSV) detectado.")
 
-            # ==========================================
-            # 2. PADRONIZAÇÃO E LIMPEZA
-            # ==========================================
-
-            # 2.1 Padronizar nomes das colunas (snake_case)
-            # Ex: "DH Connection" -> "dh_connection"
-            df_tco.columns = [c.strip().lower().replace(" ", "_") for c in df_tco.columns]
-
-            # 2.2 Renomear para alinhar com o rules.py
-            rename_map = {
-                'quantity': 'qty',      # rules.py exige 'qty'
-                'tool_raw': 'raw_name'  # rules.py exige 'raw_name'
-            }
-            df_tco = df_tco.rename(columns=rename_map)
-
-
-            # 2.4 Função de Limpeza Agressiva (O "Triturador")
-            def clean_conn(text):
-                if not isinstance(text, str): return str(text)
-                
-                # Joga tudo pra maiúsculo
-                text = text.upper()
-                
-                # Remove palavras "lixo" que atrapalham a comparação (MANTENDO PIN e BOX)
-                garbage_words = ["SIZE", "TYPE", "CONNECTION", "CONN"] 
-                for word in garbage_words:
-                    text = text.replace(word, "")
-                
-                # --- PROTEÇÃO DO PIN ---
-                # Remove " IN " (polegadas) apenas se estiver solto, para não estragar "PIN"
-                text = text.replace(" IN ", " ").replace(" INCH", " ")
-                
-                # Padroniza traços e underscores por espaços
-                text = text.replace('-', ' ').replace('_', ' ')
-                
-                # Remove espaços duplos e trim
-                text = " ".join(text.split())
-                
-                return text
-
-            # Aplica a limpeza nas colunas de conexão (BHA e TCO)
-            cols_to_clean = ['uh_connection', 'dh_connection']
-            for col in cols_to_clean:
-                if col in df_bha.columns:
-                    df_bha[col] = df_bha[col].apply(clean_conn)
-                if col in df_tco.columns:
-                    df_tco[col] = df_tco[col].apply(clean_conn)
-                    
-            # 2.5 Normalização de Nomes das Ferramentas
-            if 'norm_name' not in df_tco.columns:
-                 df_tco['norm_name'] = df_tco['raw_name'].apply(lambda x: normalize_tool_name(x)[1])
-            
-            # Garante que o BHA também tenha norm_name (caso o extrator não tenha criado)
-            if 'norm_name' not in df_bha.columns:
-                 df_bha['norm_name'] = df_bha['raw_name'].apply(lambda x: normalize_tool_name(x)[1])
-
-            # ==========================================
-            # 3. VALIDAÇÃO E DEBUG
-            # ==========================================
-
-            st.divider()
-            col_debug1, col_debug2 = st.columns(2)
-            col_debug1.info(f"Itens lidos do BHA: {len(df_bha)}")
-            col_debug2.info(f"Itens lidos da TCO: {len(df_tco)}")
-            
-            if len(df_tco) > 0:
-                with st.expander("🕵️ Espionar dados brutos da TCO processada (Debug)"):
-                    st.dataframe(df_tco.head())
-            else:
-                st.error("⚠️ Atenção: Nenhuma ferramenta foi encontrada no PDF da TCO! Verifique a extração.")
-
-            # Chama as Regras
-            df_results, df_extras = apply_validation_rules(df_bha, df_tco)
-            
-            # ==========================================
-            # 4. EXIBIÇÃO DOS RESULTADOS
-            # ==========================================
-            st.divider()
-            st.subheader("📊 Resultado da Validação")
-            
-            # Estilização
-            def color_status(val):
-                if val == 'OK': return 'color: green; font-weight: bold'
-                if val == 'WARNING': return 'color: orange; font-weight: bold'
-                return 'color: red; font-weight: bold'
-
-            st.dataframe(df_results.style.map(color_status, subset=['Status']), use_container_width=True)
-            
-            # Métricas
-            erro_count = len(df_results[df_results['Status'] == 'ERROR'])
-            warn_count = len(df_results[df_results['Status'] == 'WARNING'])
-            
-            if erro_count > 0:
-                st.error(f"Foram encontrados {erro_count} ERROS Críticos!")
-            elif warn_count > 0:
-                st.warning(f"Validação OK, mas com {warn_count} alertas.")
-            else:
-                st.success("Tudo certo! BHA e TCO compatíveis.")
-
-            with st.expander("Ver Itens Extras na TCO"):
-                st.dataframe(df_extras)
-
-            # ==========================================
-            # 5. TIRA-TEIMA (DEBUG NORMALIZAÇÃO)
-            # ==========================================
-            st.divider()
-            st.subheader("🕵️ Tira-Teima da Normalização")
-            st.write("Se houver erro de 'Item não encontrado', compare os nomes abaixo:")
-
-            col_a, col_b = st.columns(2)
-            
-            with col_a:
-                st.markdown("**BHA (Nomes Normalizados):**")
-                st.dataframe(df_bha[['raw_name', 'norm_name']].drop_duplicates())
-
-            with col_b:
-                st.markdown("**TCO (Nomes Normalizados):**")
-                if len(df_tco) > 0:
-                    st.dataframe(df_tco[['raw_name', 'norm_name']].drop_duplicates())
+    # 3. BOTÃO DE AÇÃO
+    if st.button("🚀 Validar Seleção", type="primary"):
+        with st.spinner('Analisando abas selecionadas...'):
+            try:
+                # --- A. PROCESSAMENTO DO BHA PRIMÁRIO ---
+                if is_excel:
+                    df_bha = extract_bha_data(bha_master_file, sheet_name=prim_sheet)
                 else:
-                    st.error("Tabela TCO vazia.")
+                    bha_master_file.seek(0)
+                    df_bha = extract_bha_data(bha_master_file)
+                
+                # --- B. PROCESSAMENTO DO TCO (COM FILTRO DE STATUS) ---
+                tco_file.seek(0)
+                with open("temp_tco.pdf", "wb") as f:
+                    f.write(tco_file.getbuffer())
+                df_tco = build_tco_from_pdf("temp_tco.pdf")
 
-        except Exception as e:
-            st.error(f"Erro durante o processamento: {e}")
-            st.exception(e)
+                # Limpeza e Normalização TCO
+                df_tco.columns = [c.strip().lower().replace(" ", "_") for c in df_tco.columns]
+                df_tco = df_tco.rename(columns={'quantity': 'qty', 'tool_raw': 'raw_name'})
+                
+                # Limpa conexões
+                def clean_conn(text):
+                    if not isinstance(text, str): return str(text)
+                    return " ".join(text.upper().replace("SIZE", "").replace("TYPE", "").replace("CONNECTION", "").split())
+
+                for col in ['dh_connection', 'uh_connection']:
+                    if col in df_tco.columns: df_tco[col] = df_tco[col].apply(clean_conn)
+                
+                # Normaliza Nomes
+                if 'norm_name' not in df_tco.columns:
+                    df_tco['norm_name'] = df_tco['raw_name'].apply(lambda x: normalize_tool_name(x)[1])
+                if 'norm_name' not in df_bha.columns:
+                    df_bha['norm_name'] = df_bha['raw_name'].apply(lambda x: normalize_tool_name(x)[1])
+
+                # --- C. VALIDAÇÃO PRIMÁRIA (REGRA MÍNIMO 2) ---
+                df_results_prim, df_extras = apply_validation_rules(df_bha, df_tco)
+
+                st.divider()
+                st.subheader(f"📊 Primário: {prim_sheet if prim_sheet else 'Arquivo'}")
+                
+                def color_status(val):
+                    if val == 'OK': return 'background-color: #d4edda; color: #155724'
+                    if val == 'WARNING': return 'background-color: #fff3cd; color: #856404'
+                    return 'background-color: #f8d7da; color: #721c24'
+
+                st.dataframe(df_results_prim.style.applymap(color_status, subset=['Status']), use_container_width=True)
+
+                # --- D. VALIDAÇÃO CONTINGÊNCIAS (LOOP NAS LETRAS) ---
+                if cont_sheets:
+                    st.divider()
+                    st.subheader(f"🔄 Contingências ({len(cont_sheets)} abas)")
+                    
+                    for sheet in cont_sheets:
+                        with st.expander(f"Aba: {sheet}", expanded=True):
+                            # Lê a aba de contingência
+                            df_cont = extract_bha_data(bha_master_file, sheet_name=sheet)
+                            
+                            if not df_cont.empty:
+                                if 'norm_name' not in df_cont.columns:
+                                    df_cont['norm_name'] = df_cont['raw_name'].apply(lambda x: normalize_tool_name(x)[1])
+                                
+                                # Valida contra o Primário selecionado
+                                df_res_cont = validate_contingency_bha(df_cont, df_bha, df_tco)
+                                st.dataframe(df_res_cont.style.applymap(color_status, subset=['Status']), use_container_width=True)
+                            else:
+                                st.warning(f"Aba {sheet} parece vazia ou sem itens SLB.")
+                
+                # --- E. EXTRAS E ESPIÃO ---
+                st.divider()
+                c1, c2 = st.columns(2)
+                with c1:
+                    with st.expander("📦 Sobras no TCO (Extras)"):
+                        st.dataframe(df_extras)
+                with c2:
+                    with st.expander("🕵️ Espião TCO (Ver nomes lidos)"):
+                         st.dataframe(df_tco[['raw_name', 'norm_name', 'qty', 'status']])
+
+            except Exception as e:
+                st.error(f"Erro: {e}")
+
+else:
+    st.info("Aguardando arquivos...")

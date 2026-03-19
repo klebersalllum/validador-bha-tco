@@ -19,6 +19,15 @@ def normalizar_conexao(texto):
     s = re.sub(r'\bPIN\b', '', s)
     s = re.sub(r'\bBOX\b', '', s)
     s = re.sub(r'\bIN\b', '', s)
+    
+    # 3. Limpeza de lixo residual de extração de colunas do PDF
+    s = re.sub(r'\bSPECIFIC\b', '', s)
+    s = re.sub(r'\bINSTRUCTIONS\b', '', s)
+    s = re.sub(r'\bADDITIONAL\b', '', s)
+    s = re.sub(r'\bTOOL\b', '', s)
+    s = re.sub(r'\bPLEASE\b', '', s)
+    s = re.sub(r'\bREAD\b', '', s)
+    
     s = re.sub(r'(?<=\d)-(?=\d)', ' ', s)
     s = re.sub(r'[^\w\s/.-]', '', s)
     s = re.sub(r'\s+', ' ', s).strip()
@@ -72,38 +81,54 @@ def normalize_tool_name(text: str):
 
     original = text
     text_clean = text.upper().replace("-", " ").replace("_", " ")
+    
+    text_clean = text_clean.replace("9 1/2", "950").replace("9.50", "950").replace("9.5", "950").replace("9,5", "950")
+    text_clean = text_clean.replace("8 1/4", "825").replace("8.25", "825").replace("8,25", "825")
+    text_clean = text_clean.replace("6 3/4", "675").replace("6.75", "675").replace("6,75", "675")
+    text_clean = text_clean.replace("6 1/2", "650").replace("6.50", "650").replace("6.5", "650").replace("6,5", "650")
+    text_clean = text_clean.replace("6 1/4", "625").replace("6.25", "625").replace("6,25", "625")
+    text_clean = text_clean.replace("4 3/4", "475").replace("4.75", "475").replace("4,75", "475")
+    text_clean = text_clean.replace("3 1/8", "312").replace("3.125", "312").replace("3,125", "312")
+
     text_clean = re.sub(r"#A\d+", "", text_clean)
     text_clean = re.sub(r"\(.*?\)", "", text_clean)
     text_clean = re.sub(r"\s+", " ", text_clean).strip()
+    
+    palavras = text_clean.split()
 
-    if "ILS" in text_clean: return original, "STRING STABILIZER"
+    if "ILS" in palavras: return original, "STRING STABILIZER"
     if text_clean.startswith("XO ") or " XO " in f" {text_clean} ": return original, "CROSSOVER"
     if "FLOAT" in text_clean: return original, "FLOAT SUB"
-    if ("BROCA" in text_clean or "BIT" in text_clean) and "NEAR" not in text_clean: return original, "BIT"
+    
+    if ("BROCA" in palavras or "BIT" in palavras or "BITS" in palavras) and "NEAR" not in text_clean: 
+        return original, "BIT"
 
     base = None
     for family, keys in TOOL_FAMILIES.items():
-        if any(k in text_clean for k in keys):
+        if any(re.search(rf"\b{k}[0-9]*S?\b", text_clean) for k in keys):
             if family == "POWERDRIVE":
-                if "RECEIVER" in text_clean: base = "POWERDRIVE RECEIVER"
-                elif "PDX6" in text_clean or "X6" in text_clean: base = "POWERDRIVE X6"
+                if "RECEIVER" in text_clean or " RX " in f" {text_clean} ": base = "POWERDRIVE RECEIVER"
+                elif "PDX" in text_clean or "X6" in text_clean: base = "POWERDRIVE X6"
                 elif "XCEL" in text_clean: base = "POWERDRIVE XCEL"
                 elif "XCEED" in text_clean: base = "POWERDRIVE XCEED"
                 elif "VORTEX" in text_clean: base = "POWERDRIVE VORTEX"
                 else: base = "POWERDRIVE"
             elif family == "STABILIZER":
-                if "NEAR BIT" in text_clean or " NB " in f" {text_clean} " or text_clean.startswith("NB"): base = "NB STABILIZER"
+                if "NEAR BIT" in text_clean or "NB" in palavras: base = "NB STABILIZER"
                 else: base = "STRING STABILIZER"
             else:
                 base = family
             break
 
-    if "BATTERY" in text_clean or " BATT " in f" {text_clean} ":
+    if "BATTERY" in text_clean or "BATT" in palavras:
         base = f"{base} BATTERY" if base else "BATTERY"
-    if "FNP" in text_clean:
+    if "FNP" in palavras:
         if base and "FNP" not in base: base = f"{base} FNP"
 
     if base:
+        if base in ["JAR", "CROSSOVER", "FLOAT SUB"]:
+            return original, base
+
         GEN_MAP = {'9': '900', '8': '825', '6': '675', '4': '475'}
         size_match = re.search(r"\b(950|900|825|800|675|650|625|475|312)\b", text_clean)
         gen_match = None

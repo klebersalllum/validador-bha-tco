@@ -57,8 +57,8 @@ def parse_block_smart(block_text):
     Explosão por Marcadores com Stop Words Agressivas.
     """
     stop_markers = [
-        "QUANTITY", "STATUS", "ADDITIONAL TOOL", "ADDITIONAL", "COMMENTS", 
-        "SERIAL", "PART NUMBER", "SPECIFIC INSTRUCTIONS", "FMP COMMENT", 
+        "QUANTITY", "STATUS", "COMMENTS", 
+        "SERIAL", "PART NUMBER", "FMP COMMENT", 
         "REDIRECTED", "SHIP TO", "BRMEA", "LENGTH", "MAX OD", "ID",
         "STABILIZER OD", "STABILIZER", "BLADE OD", "IMP OD", 
         "BALL CATCHER", "CAPACITY", "TRAPPER", "BALL BYPASS", "REQUIRED"
@@ -67,7 +67,7 @@ def parse_block_smart(block_text):
     interest_markers = [
         "DH CONNECTION TYPE", "DH CONNECTION", "DH CONN",
         "UH CONNECTION TYPE", "UH CONNECTION", "UH CONN",
-        "SIZE", "TYPE"
+        "SIZE", "TYPE", "ADDITIONAL TOOL"
     ]
     
     all_markers = interest_markers + stop_markers
@@ -79,6 +79,7 @@ def parse_block_smart(block_text):
     dh_candidates = []
     uh_candidates = []
     current_context = None 
+    add_text = ""
     
     for i in range(1, len(tokens)-1, 2):
         marker = tokens[i].upper().strip()
@@ -97,12 +98,17 @@ def parse_block_smart(block_text):
         elif "UH" in marker:
             current_context = "UH"
             if value: uh_candidates.append({'value': value, 'source': marker})
+        elif "ADDITIONAL TOOL" in marker:
+            current_context = "ADDITIONAL"
+            if value: add_text = value
         elif marker == "SIZE":
             if current_context == "DH" and value: dh_candidates.append({'value': value, 'source': 'SIZE'})
             elif current_context == "UH" and value: uh_candidates.append({'value': value, 'source': 'SIZE'})
         elif marker == "TYPE":
             if current_context == "DH" and value: dh_candidates.append({'value': value, 'source': 'TYPE'})
             elif current_context == "UH" and value: uh_candidates.append({'value': value, 'source': 'TYPE'})
+        elif current_context == "ADDITIONAL":
+            if value: add_text += " " + value
 
     dh_model, dh_type = smart_distribute_values(dh_candidates)
     uh_model, uh_type = smart_distribute_values(uh_candidates)
@@ -110,7 +116,13 @@ def parse_block_smart(block_text):
     dh_final = f"{dh_model} {dh_type}".strip()
     uh_final = f"{uh_model} {uh_type}".strip()
     
-    return dh_final, uh_final, dh_model, dh_type
+    # Limpeza dos textos espúrios da estrutura do PDF
+    add_text = re.sub(r'(?i)specific\s+instructions.*?(?:please read|\))', '', add_text, flags=re.DOTALL)
+    add_text = re.sub(r'(?i)specific\s+instructions', '', add_text)
+    add_text = re.sub(r'\(\s*PLEASE\s+READ\s*\)', '', add_text, flags=re.IGNORECASE)
+    add_text = re.sub(r'\s+', ' ', add_text).strip()
+    
+    return dh_final, uh_final, dh_model, dh_type, add_text
 
 def parse_tco_pdf(pdf_path):
     full_text = ""
@@ -143,15 +155,13 @@ def parse_tco_pdf(pdf_path):
         elif "CANCELLED" in header_sample: status = "Cancelled"
         elif "SUBMITTED" in header_sample: status = "Submitted"
 
-        # --- FILTRO DE STATUS (NOVO) ---
-        # Importa APENAS status ativos/aprovados. 
-        # Ignora Cancelled, Unknown ou qualquer outro não listado.
+        # --- FILTRO DE STATUS ---
         valid_statuses = ["Accepted", "Redirected", "Released", "Submitted"]
         if status not in valid_statuses:
             continue
             
         # --- PARSING ---
-        dh_full, uh_full, dh_m, dh_t = parse_block_smart(content)
+        dh_full, uh_full, dh_m, dh_t, add_spec = parse_block_smart(content)
 
         extracted_tools.append({
             "tool_raw": tool_raw,
@@ -161,7 +171,8 @@ def parse_tco_pdf(pdf_path):
             "DH Connection": dh_full,
             "UH Connection": uh_full,
             "DH Model": dh_m,
-            "DH Type": dh_t
+            "DH Type": dh_t,
+            "Additional Tool Specific": add_spec
         })
 
     return pd.DataFrame(extracted_tools)

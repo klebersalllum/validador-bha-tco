@@ -3,7 +3,7 @@ import pandas as pd
 import re
 
 # ==============================================================================
-# 6. Extração Padronizada - TCO (PDF) - STATUS UPDATE & FILTRO
+# 6. Standardized Extraction - TCO (PDF) - STATUS UPDATE & FILTER
 # ==============================================================================
 
 def normalize_tool_name(tool_raw):
@@ -13,12 +13,12 @@ def normalize_tool_name(tool_raw):
 
 def smart_distribute_values(candidates_dict):
     """
-    Decide qual valor é o Modelo e qual é o Tipo, com base na origem.
+    Decides which value is the Model and which is the Type, based on the source.
     """
     model_found = ""
     type_found = ""
     
-    # 1. Varredura por TIPO (PIN/BOX)
+    # 1. Scan by TYPE (PIN/BOX)
     for item in candidates_dict:
         val = item['value'].upper()
         if val in ["PIN", "BOX", "PIN/BOX", "BOX/PIN"]:
@@ -28,18 +28,18 @@ def smart_distribute_values(candidates_dict):
         elif " BOX " in f" {val} " or val.endswith(" BOX"):
             type_found = "BOX"
 
-    # 2. Varredura por MODELO
+    # 2. Scan by MODEL
     potential_models = []
     for item in candidates_dict:
         val = item['value']
-        # Pula se for só o tipo, lixo ou estabilizador invadindo
+        # Skips if it's just the type, garbage, or an invading stabilizer
         if val.upper() in ["PIN", "BOX", "PIN/BOX", "BOX/PIN"]: continue
         if len(val) < 2 or not any(char.isdigit() for char in val): continue
         if "STABILIZER" in val.upper() or " OD" in val.upper(): continue
         
         potential_models.append(item)
     
-    # Seleção do Melhor Modelo
+    # Selection of the Best Model
     best_model = ""
     conn_sources = [x['value'] for x in potential_models if 'CONN' in x['source']]
     
@@ -54,7 +54,7 @@ def smart_distribute_values(candidates_dict):
 
 def parse_block_smart(block_text):
     """
-    Explosão por Marcadores com Stop Words Agressivas.
+    Marker explosion with aggressive Stop Words.
     """
     stop_markers = [
         "QUANTITY", "STATUS", "COMMENTS", 
@@ -116,7 +116,7 @@ def parse_block_smart(block_text):
     dh_final = f"{dh_model} {dh_type}".strip()
     uh_final = f"{uh_model} {uh_type}".strip()
     
-    # Limpeza dos textos espúrios da estrutura do PDF
+    # Cleaning of spurious text from the PDF structure
     add_text = re.sub(r'(?i)specific\s+instructions.*?(?:please read|\))', '', add_text, flags=re.DOTALL)
     add_text = re.sub(r'(?i)specific\s+instructions', '', add_text)
     add_text = re.sub(r'\(\s*PLEASE\s+READ\s*\)', '', add_text, flags=re.IGNORECASE)
@@ -145,7 +145,7 @@ def parse_tco_pdf(pdf_path):
         tool_raw = head_match.group(2).strip()
         tool_norm = normalize_tool_name(tool_raw)
         
-        # --- LÓGICA DE STATUS ---
+        # --- STATUS LOGIC ---
         status = "Unknown"
         header_sample = content[:400].upper()
         
@@ -155,7 +155,7 @@ def parse_tco_pdf(pdf_path):
         elif "CANCELLED" in header_sample: status = "Cancelled"
         elif "SUBMITTED" in header_sample: status = "Submitted"
 
-        # --- FILTRO DE STATUS ---
+        # --- STATUS FILTER ---
         valid_statuses = ["Accepted", "Redirected", "Released", "Submitted"]
         if status not in valid_statuses:
             continue

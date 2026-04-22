@@ -3,57 +3,57 @@ import pandas as pd
 import re
 
 # ==============================================================================
-# 6. Extração Padronizada - TCO (PDF)
+# 6. Standardized Extraction - TCO (PDF)
 # ==============================================================================
 
 def clean_text_block(text):
-    """Limpa caracteres invisíveis para facilitar a regex."""
+    """Cleans invisible characters to facilitate regex."""
     if not text: return ""
     return re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', text)
 
 def get_field_value(block_text, label, stop_words):
     """
-    6.3 - Varredura de Conteúdo Interno:
-    Busca um valor específico dentro do bloco de texto da ferramenta.
+    6.3 - Internal Content Scan:
+    Searches for a specific value within the tool's text block.
     """
-    # Regex de parada (Stop Words)
+    # Stop regex (Stop Words)
     stops_regex = "|".join([re.escape(s) for s in stop_words])
     
-    # Procura pela Label (ex: "DH Connection")
-    # Ignora pontuação [:\-\s]*
-    # Captura o conteúdo (.*?)
-    # Para ao encontrar: 2 espaços, quebra de linha ou uma Stop Word
+    # Searches for the Label (e.g., "DH Connection")
+    # Ignores punctuation [:\-\s]*
+    # Captures the content (.*?)
+    # Stops when finding: 2 spaces, line break, or a Stop Word
     pattern = rf"{label}[^\w]*?(.*?)(?=\s{2,}|\n|{stops_regex}|$)"
     
     match = re.search(pattern, block_text, re.IGNORECASE)
     
     if match:
         val = match.group(1).strip()
-        # Filtro de segurança para não pegar lixo
+        # Security filter to avoid picking up garbage
         if len(val) < 50 and "ADDITIONAL" not in val.upper():
             return val
     return ""
 
 def parse_tco_pdf(pdf_path):
     """
-    Implementa a lógica 6.1: Extração por Blocos
+    Implements logic 6.1: Block Extraction
     """
     full_text = ""
     
-    # 1. Extração Brutal (Layout=True para detectar colunas visuais)
+    # 1. Brute Extraction (Layout=True to detect visual columns)
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
             text = page.extract_text(layout=True)
             if text:
                 full_text += "\n" + text
 
-    # 2. Divisão por Blocos usando "Quantity :"
-    # O split gera uma lista. Como "Quantity" é o separador, reconstruímos o bloco.
+    # 2. Division by Blocks using "Quantity :"
+    # The split generates a list. Since "Quantity" is the separator, we reconstruct the block.
     raw_blocks = re.split(r"(Quantity\s*:\s*)", full_text)
     
     extracted_tools = []
     
-    # Stop Words (Campos que indicam o fim da leitura do campo anterior)
+    # Stop Words (Fields that indicate the end of reading the previous field)
     stop_words = [
         "Size", "Type", "Additional Tool", "Specific Instructions", 
         "FMP Comment", "Redirected", "Ship To", "Comments", 
@@ -61,13 +61,13 @@ def parse_tco_pdf(pdf_path):
         "DH Connection", "UH Connection", "Length", "Max OD"
     ]
 
-    # Itera pulando de 2 em 2 (Header + Conteúdo)
+    # Iterates skipping by 2 (Header + Content)
     for i in range(1, len(raw_blocks), 2):
         header = raw_blocks[i]      # "Quantity :"
-        content = raw_blocks[i+1]   # "1 (Tool Name)... restante do texto"
+        content = raw_blocks[i+1]   # "1 (Tool Name)... rest of the text"
         block = header + content
         
-        # --- 6.1 Cabeçalho do Bloco ---
+        # --- 6.1 Block Header ---
         # Quantity : X (Tool Name)
         head_match = re.search(r"Quantity\s*:\s*(\d+)\s*\((.*?)\)", block, re.IGNORECASE)
         if not head_match: continue
@@ -75,35 +75,35 @@ def parse_tco_pdf(pdf_path):
         qty = int(head_match.group(1))
         tool_raw = head_match.group(2).strip()
         
-        # Status (procura nos primeiros 300 caracteres do bloco)
+        # Status (searches in the first 300 characters of the block)
         status = "Unknown"
         header_sample = content[:300].upper()
         if "ACCEPTED" in header_sample: status = "Accepted"
         elif "REDIRECTED" in header_sample: status = "Redirected"
         elif "CANCELLED" in header_sample: status = "Cancelled"
 
-        # --- 6.2 Campos Obrigatórios (Varredura Interna) ---
+        # --- 6.2 Mandatory Fields (Internal Scan) ---
         
-        # DH Connection (Modelo)
+        # DH Connection (Model)
         dh_conn = get_field_value(content, "DH Connection", stop_words + ["Type"])
         
         # DH Type (Pin/Box)
-        # Note: A label no PDF muitas vezes aparece solta como "Type" abaixo de DH Connection
-        # Aqui tentamos buscar "DH Connection Type" especificamente ou inferir pela proximidade
-        # Mas seguindo a regra estrita, buscamos a label composta se existir, ou "Type" próximo.
-        # Para simplificar e ser robusto, buscaremos "Type" logo após DH Connection na lógica de fusão futura,
-        # mas aqui extraímos o campo se ele estiver explícito como "DH Connection Type" ou apenas "Type" na coluna certa.
-        # Dado o layout de colunas, "Type" costuma ser uma label repetida. 
-        # Vamos usar uma busca específica para "Type" que esteja perto de conexões.
+        # Note: The label in the PDF often appears loose as "Type" below DH Connection
+        # Here we try to specifically search for "DH Connection Type" or infer by proximity
+        # But following the strict rule, we search for the composite label if it exists, or "Type" nearby.
+        # To simplify and be robust, we will search for "Type" right after DH Connection in the future fusion logic,
+        # but here we extract the field if it is explicitly "DH Connection Type" or just "Type" in the right column.
+        # Given the column layout, "Type" is usually a repeated label. 
+        # We will use a specific search for "Type" that is close to connections.
         
-        # Ajuste estratégico: O PDF separa em colunas.
-        # Coluna 1: DH Connection: 7 5/8 REG
-        # Coluna 2: DH Connection Type: PIN (ou as vezes só Type)
+        # Strategic adjustment: The PDF separates into columns.
+        # Column 1: DH Connection: 7 5/8 REG
+        # Column 2: DH Connection Type: PIN (or sometimes just Type)
         
-        # Vamos buscar explicitamente variações
+        # Let's explicitly search for variations
         dh_type = get_field_value(content, "DH Connection Type", stop_words)
         if not dh_type:
-             # Tenta pegar um "Type" genérico que apareça logo após a conexão se não achou o especifico
+             # Try to get a generic "Type" that appears right after the connection if the specific one wasn't found
              pass 
 
         uh_conn = get_field_value(content, "UH Connection", stop_words + ["Type"])
@@ -111,7 +111,7 @@ def parse_tco_pdf(pdf_path):
         
         size = get_field_value(content, "Size", stop_words)
 
-        # Normalização simples para tool_norm (pode usar seu normalize.py aqui se quiser)
+        # Simple normalization for tool_norm (you can use your normalize.py here if you want)
         tool_norm = tool_raw.upper().replace("-", " ").strip()
 
         extracted_tools.append({
@@ -128,17 +128,17 @@ def parse_tco_pdf(pdf_path):
 
     return pd.DataFrame(extracted_tools)
 
-# Função de compatibilidade para chamar no app.py
+# Compatibility function to call in app.py
 def build_tco_from_pdf(pdf_path):
     df = parse_tco_pdf(pdf_path)
     
-    # 6.4 (Extra) - Pós-processamento para Validação
-    # Como as regras de validação geralmente esperam "7 5/8 REG PIN" junto,
-    # nós criamos colunas de "Full Connection" aqui para facilitar o rules.py
+    # 6.4 (Extra) - Post-processing for Validation
+    # Since the validation rules usually expect "7 5/8 REG PIN" together,
+    # we create "Full Connection" columns here to facilitate rules.py
     
     df['dh_full'] = df.apply(lambda row: f"{row['DH Connection']} {row['DH Connection Type']}".strip(), axis=1)
     df['uh_full'] = df.apply(lambda row: f"{row['UH Connection']} {row['UH Connection Type']}".strip(), axis=1)
     
-    # Renomeia para bater com o que o rules.py espera (opcional, depende do seu rules.py)
-    # Mas seguindo a estrutura pedida, retornamos o DF com os campos separados E os juntos
+    # Rename to match what rules.py expects (optional, depends on your rules.py)
+    # But following the requested structure, we return the DF with the separated AND combined fields
     return df

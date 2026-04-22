@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 
 def get_excel_sheet_names(file):
-    """Retorna a lista de nomes das abas de um Excel."""
+    """Returns the list of sheet names from an Excel file."""
     try:
         excel = pd.ExcelFile(file)
         return excel.sheet_names
@@ -11,32 +11,32 @@ def get_excel_sheet_names(file):
 
 def extract_bha_data(file_path, sheet_name=None):
     """
-    Lê o arquivo BHA. Se for Excel, lê a aba especificada.
+    Reads the BHA file. If it's an Excel file, reads the specified sheet.
     """
     df = None
     
-    # 1. Leitura do Arquivo (Suporta Aba Específica)
+    # 1. File Reading (Supports Specific Sheet)
     try:
         if sheet_name:
-            # Lê especificamente a aba selecionada
+            # Reads specifically the selected sheet
             df = pd.read_excel(file_path, sheet_name=sheet_name, header=None)
         else:
-            # Tenta CSV ou Excel padrão
+            # Tries CSV or default Excel
             try:
                 df = pd.read_csv(file_path, header=None, sep=None, engine='python')
             except:
                 df = pd.read_excel(file_path, header=None)
     except Exception as e:
-        # Retorna vazio se der erro, para não quebrar o app inteiro
+        # Returns empty if an error occurs, to avoid breaking the entire app
         return pd.DataFrame()
 
-    # 2. Localizar a linha de cabeçalho
+    # 2. Locate the header row
     header_row = -1
     desc_col = -1
     
     possible_anchors = ['Desc.', 'Desc', 'Description', 'DESCRIPTION', 'DESC.']
     
-    # Varre as primeiras 50 linhas
+    # Scans the first 50 rows
     for r in range(min(50, len(df))):
         row_values = [str(val).strip() for val in df.iloc[r, :].values]
         
@@ -81,7 +81,7 @@ def extract_bha_data(file_path, sheet_name=None):
             
         name = str(raw_name).strip()
         
-        # FILTRO SLB
+        # SLB FILTER
         manu_val = str(get_val(i, desc_col + OFF_MANU)).strip().upper()
         if "SLB" not in manu_val:
             i += 2
@@ -101,7 +101,7 @@ def extract_bha_data(file_path, sheet_name=None):
             if val.lower() == 'nan': return ""
             return val
 
-        # Identifica a fonte para o relatório
+        # Identifies the source for the report
         source = sheet_name if sheet_name else getattr(file_path, 'name', 'BHA')
 
         items.append({

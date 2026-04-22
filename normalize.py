@@ -2,25 +2,25 @@ import re
 import unicodedata
 
 # ======================================================
-# 1. NORMALIZAÇÃO DE CONEXÕES
+# 1. CONNECTION NORMALIZATION
 # ======================================================
-def normalizar_conexao(texto):
-    if not texto or str(texto).lower() == 'nan': return ""
+def normalize_connection(text):
+    if not text or str(text).lower() == 'nan': return ""
     
-    s = str(texto).upper()
+    s = str(text).upper()
     
-    # 1. FORÇA BRUTA DE SUBSTITUIÇÃO (Garante o NC50)
+    # 1. BRUTE FORCE REPLACEMENT (Ensures NC50)
     s = s.replace("4 1/2 IF", "NC50").replace("4-1/2 IF", "NC50").replace("4.1/2 IF", "NC50")
     s = s.replace("3 1/2 IF", "NC38").replace("3-1/2 IF", "NC38").replace("3.1/2 IF", "NC38")
     s = s.replace("2 7/8 IF", "NC31").replace("2-7/8 IF", "NC31").replace("2.7/8 IF", "NC31")
     
-    # 2. Limpeza padrão
+    # 2. Standard cleaning
     s = unicodedata.normalize('NFKD', s).replace('\xa0', ' ')
     s = re.sub(r'\bPIN\b', '', s)
     s = re.sub(r'\bBOX\b', '', s)
     s = re.sub(r'\bIN\b', '', s)
     
-    # 3. Limpeza de lixo residual de extração de colunas do PDF
+    # 3. Clean up residual garbage from PDF column extraction
     s = re.sub(r'\bSPECIFIC\b', '', s)
     s = re.sub(r'\bINSTRUCTIONS\b', '', s)
     s = re.sub(r'\bADDITIONAL\b', '', s)
@@ -34,7 +34,7 @@ def normalizar_conexao(texto):
     return s
 
 # ======================================================
-# 2. TOOL FAMILIES (MAPA GERAL)
+# 2. TOOL FAMILIES (GENERAL MAP)
 # ======================================================
 TOOL_FAMILIES = {
     "ARC": ["ARC", "ARC6", "ARC8", "ARC9", "ARCVISION", "ARRAY RESISTIVITY"],
@@ -55,6 +55,7 @@ TOOL_FAMILIES = {
     "MOTOR": ["MOTOR", "MUD MOTOR", "DRILLING MOTOR", "DYNAFORCE", "SLIDER", "POWERPAK", "A962", "PDM", "S700", "S700M"],
     "STABILIZER": ["STABILIZER", "STAB", "ILS", "NB", "NEAR BIT"], 
     "REAMER": ["REAMER", "ANDERREAMER", "XR", "GUNDRILL", "GUN DRILL", "RHINO", "ROLLER REAMER", "HOLE OPENER", "HO"],
+    # Keeping Portuguese terms in the Bit family just in case old BHA files are processed
     "BIT": ["BROCA", "BIT", "PDC", "ROCK BIT", "TRICÔNICA", "TRICONICA"],
     "DRILL COLLAR": ["DRILL COLLAR", "DC"],
     "HWDP": ["HWDP", "HEAVY WEIGHT", "HW"],
@@ -74,7 +75,7 @@ TOOL_FAMILIES = {
 }
 
 # ======================================================
-# 3. NORMALIZAÇÃO DE NOMES
+# 3. NAME NORMALIZATION
 # ======================================================
 def normalize_tool_name(text: str):
     if not text or not isinstance(text, str): return text, None
@@ -94,13 +95,13 @@ def normalize_tool_name(text: str):
     text_clean = re.sub(r"\(.*?\)", "", text_clean)
     text_clean = re.sub(r"\s+", " ", text_clean).strip()
     
-    palavras = text_clean.split()
+    words = text_clean.split()
 
-    if "ILS" in palavras: return original, "STRING STABILIZER"
+    if "ILS" in words: return original, "STRING STABILIZER"
     if text_clean.startswith("XO ") or " XO " in f" {text_clean} ": return original, "CROSSOVER"
     if "FLOAT" in text_clean: return original, "FLOAT SUB"
     
-    if ("BROCA" in palavras or "BIT" in palavras or "BITS" in palavras) and "NEAR" not in text_clean: 
+    if ("BROCA" in words or "BIT" in words or "BITS" in words) and "NEAR" not in text_clean: 
         return original, "BIT"
 
     base = None
@@ -114,15 +115,15 @@ def normalize_tool_name(text: str):
                 elif "VORTEX" in text_clean: base = "POWERDRIVE VORTEX"
                 else: base = "POWERDRIVE"
             elif family == "STABILIZER":
-                if "NEAR BIT" in text_clean or "NB" in palavras: base = "NB STABILIZER"
+                if "NEAR BIT" in text_clean or "NB" in words: base = "NB STABILIZER"
                 else: base = "STRING STABILIZER"
             else:
                 base = family
             break
 
-    if "BATTERY" in text_clean or "BATT" in palavras:
+    if "BATTERY" in text_clean or "BATT" in words:
         base = f"{base} BATTERY" if base else "BATTERY"
-    if "FNP" in palavras:
+    if "FNP" in words:
         if base and "FNP" not in base: base = f"{base} FNP"
 
     if base:
